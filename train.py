@@ -4,6 +4,8 @@ import time
 import random
 import string
 import argparse
+import json 
+from  base_row_logging import *
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -12,11 +14,30 @@ import torch.optim as optim
 import torch.utils.data
 import numpy as np
 
-from utils import CTCLabelConverter, CTCLabelConverterForBaiduWarpctc, AttnLabelConverter, Averager
+from utils import CTCLabelConverter, CTCLabelConverterForBaiduWarpctc, AttnLabelConverter, Averager, Epoch
 from dataset import hierarchical_dataset, AlignCollate, Batch_Balanced_Dataset
 from model import Model
 from test import validation
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model_details = {}
+
+def check_loss(loss, loss_value):
+    """
+    Check that warp-ctc loss is valid and will not break training
+    :return: Return if loss is valid, and the error in case it is not
+    """
+    loss_valid = True
+    error = ''
+    if loss_value == float("inf") or loss_value == float("-inf"):
+        loss_valid = False
+        error = "WARNING: received an inf loss"
+    elif torch.isnan(loss).sum() > 0:
+        loss_valid = False
+        error = 'WARNING: received a nan loss, setting loss value to 0'
+    elif loss_value < 0:
+        loss_valid = False
+        error = "WARNING: received a negative loss"
+    return loss_valid, error
 
 
 def train(opt):
@@ -29,10 +50,12 @@ def train(opt):
     opt.select_data = opt.select_data.split('-')
     opt.batch_ratio = opt.batch_ratio.split('-')
     train_dataset = Batch_Balanced_Dataset(opt)
-
+    print("total samples in training data = ", len(train_dataset))
+    opt.number_of_training_data = len(train_dataset)
+    
     log = open(f'./saved_models/{opt.exp_name}/log_dataset.txt', 'a')
     AlignCollate_valid = AlignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio_with_pad=opt.PAD)
-    valid_dataset, valid_dataset_log = hierarchical_dataset(root=opt.valid_data, opt=opt)
+    valid_dataset, valid_dataset_log, _ = hierarchical_dataset(root=opt.valid_data, opt=opt)
     valid_loader = torch.utils.data.DataLoader(
         valid_dataset, batch_size=opt.batch_size,
         shuffle=True,  # 'True' to check training progress with validation function.
@@ -84,8 +107,8 @@ def train(opt):
             model.load_state_dict(torch.load(opt.saved_model), strict=False)
         else:
             model.load_state_dict(torch.load(opt.saved_model))
-    print("Model:")
-    print(model)
+    # print("Model:")
+    # print(model)
 
     """ setup loss """
     if 'CTC' in opt.Prediction:
@@ -116,8 +139,9 @@ def train(opt):
         optimizer = optim.Adadelta(filtered_parameters, lr=opt.lr, rho=opt.rho, eps=opt.eps)
     print("Optimizer:")
     print(optimizer)
-
-    """ final options """
+    # """ final options """
+    
+    opt.num_iter = Epoch(opt).calculate_number_of_epochs()
     # print(opt)
     with open(f'./saved_models/{opt.exp_name}/opt.txt', 'a') as opt_file:
         opt_log = '------------ Options -------------\n'
@@ -127,7 +151,8 @@ def train(opt):
         opt_log += '---------------------------------------\n'
         print(opt_log)
         opt_file.write(opt_log)
-
+    
+    #model_row_id = create_row(args)
     """ start training """
     start_iter = 0
     if opt.saved_model != '':
@@ -157,19 +182,25 @@ def train(opt):
                 cost = criterion(preds, text, preds_size, length) / batch_size
             else:
                 preds = preds.log_softmax(2).permute(1, 0, 2)
-                cost = criterion(preds, text, preds_size, length)
+                cost = criterion(preds, text, preds_size, length) 
 
         else:
             preds = model(image, text[:, :-1])  # align with Attention.forward
             target = text[:, 1:]  # without [GO] Symbol
             cost = criterion(preds.view(-1, preds.shape[-1]), target.contiguous().view(-1))
 
+        # cost = cost/batch_size
+        # cost_value = cost.item()
+        # valid_loss = check_loss(cost, cost_value)
+        # if valid_loss:    
         model.zero_grad()
         cost.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip)  # gradient clipping with 5 (Default)
         optimizer.step()
-
         loss_avg.add(cost)
+        # else:
+        #     continue
+            
 
         # validation part
         if (iteration + 1) % opt.valInterval == 0 or iteration == 0: # To see training progress, we also conduct validation when 'iteration == 0' 
@@ -183,9 +214,10 @@ def train(opt):
                 model.train()
 
                 # training loss and validation loss
-                loss_log = f'[{iteration+1}/{opt.num_iter}] Train loss: {loss_avg.val():0.5f}, Valid loss: {valid_loss:0.5f}, Elapsed_time: {elapsed_time:0.5f}'
+                current_epoch = int((iteration+1)/(opt.number_of_training_data/opt.batch_size))+1
+                loss_log = f'[{iteration+1}/{opt.num_iter}] [{current_epoch}/{opt.num_epoch}] Train loss: {loss_avg.val():0.5f}, Valid loss: {valid_loss:0.5f}, Elapsed_time: {elapsed_time:0.5f}'
                 loss_avg.reset()
-
+                
                 current_model_log = f'{"Current_accuracy":17s}: {current_accuracy:0.3f}, {"Current_norm_ED":17s}: {current_norm_ED:0.2f}'
 
                 # keep best accuracy model (on valid dataset)
@@ -234,7 +266,8 @@ if __name__ == '__main__':
     parser.add_argument('--manualSeed', type=int, default=1111, help='for random seed setting')
     parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
     parser.add_argument('--batch_size', type=int, default=192, help='input batch size')
-    parser.add_argument('--num_iter', type=int, default=300000, help='number of iterations to train for')
+    parser.add_argument('--num_iter', type=int, default=0, help='number of iterations to train for')
+    parser.add_argument('--num_epoch', type=int, default=0, help='number of epoch to train for')
     parser.add_argument('--valInterval', type=int, default=2000, help='Interval between each validation')
     parser.add_argument('--saved_model', default='', help="path to model to continue training")
     parser.add_argument('--FT', action='store_true', help='whether to do fine-tuning')
@@ -246,10 +279,10 @@ if __name__ == '__main__':
     parser.add_argument('--grad_clip', type=float, default=5, help='gradient clipping value. default=5')
     parser.add_argument('--baiduCTC', action='store_true', help='for data_filtering_off mode')
     """ Data processing """
-    parser.add_argument('--select_data', type=str, default='MJ-ST',
-                        help='select training data (default is MJ-ST, which means MJ and ST used as training data)')
-    parser.add_argument('--batch_ratio', type=str, default='0.5-0.5',
-                        help='assign ratio for each selected data in the batch')
+    parser.add_argument('--select_data', type=str, default='/', 
+                     help='select training data (default is MJ-ST, which means MJ and ST used as training data)') 
+    parser.add_argument('--batch_ratio', type=str, default='1', 
+                     help='assign ratio for each selected data in the batch')
     parser.add_argument('--total_data_usage_ratio', type=str, default='1.0',
                         help='total data usage ratio, this ratio is multiplied to total number of data.')
     parser.add_argument('--batch_max_length', type=int, default=25, help='maximum-label-length')
@@ -257,7 +290,7 @@ if __name__ == '__main__':
     parser.add_argument('--imgW', type=int, default=100, help='the width of the input image')
     parser.add_argument('--rgb', action='store_true', help='use rgb input')
     parser.add_argument('--character', type=str,
-                        default='0123456789abcdefghijklmnopqrstuvwxyz', help='character label')
+                        default='ةجحخهعغفقثصضشسيبلاتنمكورزدذطظئءأإؤآ', help='character label')
     parser.add_argument('--sensitive', action='store_true', help='for sensitive character mode')
     parser.add_argument('--PAD', action='store_true', help='whether to keep ratio then pad for image resize')
     parser.add_argument('--data_filtering_off', action='store_true', help='for data_filtering_off mode')
@@ -275,14 +308,14 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_size', type=int, default=256, help='the size of the LSTM hidden state')
 
     opt = parser.parse_args()
-
+    
     if not opt.exp_name:
         opt.exp_name = f'{opt.Transformation}-{opt.FeatureExtraction}-{opt.SequenceModeling}-{opt.Prediction}'
         opt.exp_name += f'-Seed{opt.manualSeed}'
-        # print(opt.exp_name)
 
     os.makedirs(f'./saved_models/{opt.exp_name}', exist_ok=True)
-
+    open(f'./saved_models/{opt.exp_name}/run_command.txt', "w").write(" ".join(sys.argv))
+    
     """ vocab / character number configuration """
     if opt.sensitive:
         # opt.character += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'

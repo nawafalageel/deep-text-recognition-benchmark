@@ -5,6 +5,7 @@ import six
 import math
 import lmdb
 import torch
+import pandas as pd
 
 from natsort import natsorted
 from PIL import Image
@@ -12,6 +13,8 @@ import numpy as np
 from torch.utils.data import Dataset, ConcatDataset, Subset
 from torch._utils import _accumulate
 import torchvision.transforms as transforms
+
+from tqdm import tqdm
 
 
 class Batch_Balanced_Dataset(object):
@@ -35,11 +38,13 @@ class Batch_Balanced_Dataset(object):
         self.dataloader_iter_list = []
         batch_size_list = []
         Total_batch_size = 0
+        self.datasets_size = 0
         for selected_d, batch_ratio_d in zip(opt.select_data, opt.batch_ratio):
             _batch_size = max(round(opt.batch_size * float(batch_ratio_d)), 1)
             print(dashed_line)
             log.write(dashed_line + '\n')
-            _dataset, _dataset_log = hierarchical_dataset(root=opt.train_data, opt=opt, select_data=[selected_d])
+            _dataset, _dataset_log, dataset_size = hierarchical_dataset(root=opt.train_data, opt=opt, select_data=[selected_d])
+            print("Dataset size = ", dataset_size)
             total_number_dataset = len(_dataset)
             log.write(_dataset_log)
 
@@ -67,15 +72,19 @@ class Batch_Balanced_Dataset(object):
                 collate_fn=_AlignCollate, pin_memory=True)
             self.data_loader_list.append(_data_loader)
             self.dataloader_iter_list.append(iter(_data_loader))
-
+            self.datasets_size+=dataset_size
+            
         Total_batch_size_log = f'{dashed_line}\n'
         batch_size_sum = '+'.join(batch_size_list)
         Total_batch_size_log += f'Total_batch_size: {batch_size_sum} = {Total_batch_size}\n'
         Total_batch_size_log += f'{dashed_line}'
+        total_number_of_training_data = f'Total number of training data = {self.datasets_size}\n'
+        total_number_of_training_data += f'{dashed_line}'
         opt.batch_size = Total_batch_size
 
         print(Total_batch_size_log)
         log.write(Total_batch_size_log + '\n')
+        log.write(total_number_of_training_data + '\n')
         log.close()
 
     def get_batch(self):
@@ -94,10 +103,16 @@ class Batch_Balanced_Dataset(object):
                 balanced_batch_texts += text
             except ValueError:
                 pass
-
+            except IsADirectoryError:
+                print(data_loader_iter)
+                pass
         balanced_batch_images = torch.cat(balanced_batch_images, 0)
 
         return balanced_batch_images, balanced_batch_texts
+    
+    def __len__(self):
+        return self.datasets_size
+        
 
 
 def hierarchical_dataset(root, opt, select_data='/'):
@@ -106,24 +121,35 @@ def hierarchical_dataset(root, opt, select_data='/'):
     dataset_log = f'dataset_root:    {root}\t dataset: {select_data[0]}'
     print(dataset_log)
     dataset_log += '\n'
-    for dirpath, dirnames, filenames in os.walk(root+'/'):
-        if not dirnames:
-            select_flag = False
-            for selected_d in select_data:
-                if selected_d in dirpath:
-                    select_flag = True
-                    break
+    for dirpath in os.listdir(root+'/'):
+        
+        select_flag = False
+        one_dataset = False
+        for selected_d in select_data:
+            if selected_d in dirpath:
+                select_flag = True
+                root = os.path.normpath(os.path.join(root+'/', dirpath))
+            elif selected_d == '/':
+                select_flag = True
+                one_dataset = True
+                dirpath = '/'
+                print(root)
+                print("selected_d: ", selected_d)
+                break
 
-            if select_flag:
-                dataset = LmdbDataset(dirpath, opt)
-                sub_dataset_log = f'sub-directory:\t/{os.path.relpath(dirpath, root)}\t num samples: {len(dataset)}'
-                print(sub_dataset_log)
-                dataset_log += f'{sub_dataset_log}\n'
-                dataset_list.append(dataset)
+        if select_flag:
+            dataset = OCRDataset(root, opt)
+            sub_dataset_log = f'sub-directory:\t/{os.path.relpath(root, root)}\t num samples: {len(dataset)}'
+            print(sub_dataset_log)
+            dataset_log += f'{sub_dataset_log}\n'
+            dataset_list.append(dataset)
+        
+        if one_dataset:
+            break
 
     concatenated_dataset = ConcatDataset(dataset_list)
 
-    return concatenated_dataset, dataset_log
+    return concatenated_dataset, dataset_log, len(dataset)
 
 
 class LmdbDataset(Dataset):
@@ -170,7 +196,29 @@ class LmdbDataset(Dataset):
                     out_of_char = f'[^{self.opt.character}]'
                     if re.search(out_of_char, label.lower()):
                         continue
-
+                    if "\xad" in label:
+                        # print("label: ", label)
+                        # print(out_of_char)
+                        continue
+                    if "-" in label:
+                        # print("wrong label: ", label)
+                        continue
+                    if "\u200c" in label:
+                        # print("wrong label: ", label)
+                        continue
+                    if "ڑ" in label:
+                        continue
+                    if "\u200d" in label:
+                        continue
+                    if "Ƒ" in label:
+                        continue
+                    if "Â" in label:
+                        continue
+                    if "œ" in label:
+                        continue
+                    if "Ï" in label:
+                        continue
+ 
                     self.filtered_index_list.append(index)
 
                 self.nSamples = len(self.filtered_index_list)
@@ -206,8 +254,8 @@ class LmdbDataset(Dataset):
                     img = Image.new('L', (self.opt.imgW, self.opt.imgH))
                 label = '[dummy_label]'
 
-            if not self.opt.sensitive:
-                label = label.lower()
+#            if not self.opt.sensitive:
+#                label = label.lower()
 
             # We only train and evaluate on alphanumerics (or pre-defined character set in train.py)
             out_of_char = f'[^{self.opt.character}]'
@@ -215,6 +263,75 @@ class LmdbDataset(Dataset):
 
         return (img, label)
 
+class OCRDataset(Dataset):
+
+    def __init__(self, root, opt):
+        
+        self.root = root
+        self.opt = opt
+        print("root path: ", root)
+        try:
+            self.df = pd.read_csv(os.path.join(root,'gt.txt'), sep='\t', engine='python', header=None, quotechar="'", names=['filename', 'words'], keep_default_na=False)
+        except:
+            self.df = pd.read_csv(os.path.join(root,'gt.txt'), sep='\t', engine='c', header=None, quotechar="'", names=['filename', 'words'], keep_default_na=False)
+        self.nSamples = len(self.df)
+
+        if self.opt.data_filtering_off:
+            self.filtered_index_list = [index + 1 for index in range(self.nSamples)]
+        else:
+            self.filtered_index_list = []
+            print("Loading data...")
+            for index in tqdm(range(self.nSamples)):
+                label = self.df.at[index,'words']
+                try:
+                    if len(label) > self.opt.batch_max_length:
+                        continue
+                except:
+                    print(label)
+                
+                # Since the original regex doesn't work this is an alternative approach
+                skip_example = True
+                for c in label:
+                     if c not in self.opt.character:
+                        break
+                else:
+                    skip_example = False
+                
+                if skip_example:
+                    continue
+                # out_of_char = f'[^{self.opt.character}]'
+                # if re.search(out_of_char, label.lower()):
+                #     print("issue character: ", label)
+                #     continue
+                self.filtered_index_list.append(index)
+            self.nSamples = len(self.filtered_index_list)
+
+    def __len__(self):
+        return self.nSamples
+
+    def __getitem__(self, index):
+        index = self.filtered_index_list[index]
+        img_fname = self.df.at[index,'filename']
+        # print("img_fname: ", img_fname)
+        img_fpath = os.path.join(self.root, img_fname)
+        # print("img_fpath: ", img_fpath)
+        label = self.df.at[index,'words']
+        # print("label: ", label)
+
+        if self.opt.rgb:
+            img = Image.open(img_fpath).convert('RGB')  # for color image
+        else:
+            img = Image.open(img_fpath).convert('L')
+
+        if not self.opt.sensitive:
+            label = label.lower()
+
+        # We only train and evaluate on alphanumerics (or pre-defined character set in train.py)
+        out_of_char = f'[^{self.opt.character}]'
+        label = re.sub(out_of_char, '', label)
+
+        return (img, label)
+    
 
 class RawDataset(Dataset):
 

@@ -12,6 +12,7 @@ class CTCLabelConverter(object):
         self.dict = {}
         for i, char in enumerate(dict_character):
             # NOTE: 0 is reserved for 'CTCblank' token required by CTCLoss
+            # print("char = ", char)
             self.dict[char] = i + 1
 
         self.character = ['[CTCblank]'] + dict_character  # dummy '[CTCblank]' token for CTCLoss (index 0)
@@ -29,11 +30,21 @@ class CTCLabelConverter(object):
         length = [len(s) for s in text]
 
         # The index used for padding (=0) would not affect the CTC loss calculation.
+        #print("text: ", text)
+        #print("batch_max_length: ", type(batch_max_length))
+        #print(len(text), batch_max_length)
         batch_text = torch.LongTensor(len(text), batch_max_length).fill_(0)
+        #print("HI")
         for i, t in enumerate(text):
             text = list(t)
-            text = [self.dict[char] for char in text]
-            batch_text[i][:len(text)] = torch.LongTensor(text)
+            #print(text)
+            try:
+                text = [self.dict[char] for char in text]
+                batch_text[i][:len(text)] = torch.LongTensor(text)
+            except Exception as e:
+                print("issue character: ", e)
+                print(text, "     ", "".join(text), "\n")
+                continue
         return (batch_text.to(device), torch.IntTensor(length).to(device))
 
     def decode(self, text_index, length):
@@ -41,7 +52,6 @@ class CTCLabelConverter(object):
         texts = []
         for index, l in enumerate(length):
             t = text_index[index, :]
-
             char_list = []
             for i in range(l):
                 if t[i] != 0 and (not (i > 0 and t[i - 1] == t[i])):  # removing repeated characters and blank.
@@ -105,7 +115,7 @@ class AttnLabelConverter(object):
     def __init__(self, character):
         # character (str): set of the possible characters.
         # [GO] for the start token of the attention decoder. [s] for end-of-sentence token.
-        list_token = ['[GO]', '[s]']  # ['[s]','[UNK]','[PAD]','[GO]']
+        list_token = ['[s]','[GO]'] #['[GO]', '[s]', '[PAD'] 
         list_character = list(character)
         self.character = list_token + list_character
 
@@ -133,7 +143,7 @@ class AttnLabelConverter(object):
         for i, t in enumerate(text):
             text = list(t)
             text.append('[s]')
-            text = [self.dict[char] for char in text]
+            text = [self.dict[char] for char in text] # [self.dict[char] if char in self.dict else self.dict['[UNK]'] for char in text]  # [self.dict[char] for char in text]
             batch_text[i][1:1 + len(text)] = torch.LongTensor(text)  # batch_text[:, 0] = [GO] token
         return (batch_text.to(device), torch.IntTensor(length).to(device))
 
@@ -167,3 +177,28 @@ class Averager(object):
         if self.n_count != 0:
             res = self.sum / float(self.n_count)
         return res
+
+class Epoch(object):
+    """
+    This function will calculate the number of epoch based on the training data.
+    
+    """
+    def __init__(self, opt):
+        self.number_of_training_data = opt.number_of_training_data
+        self.batch_size = opt.batch_size
+        self.num_epoch = opt.num_epoch
+        self.num_iter = opt.num_iter
+
+    def calculate_number_of_epochs(self):
+        
+        if self.num_iter != 0:
+            return self.num_iter
+        else:
+            self.num_iter = int(self.number_of_training_data/self.batch_size)*self.num_epoch
+            print("number of iteration after specifing epoch size = ", self.num_iter)
+            return self.num_iter
+        
+    def __len__(self):
+        return 
+    
+    

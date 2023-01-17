@@ -13,14 +13,25 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 """
-
+import torch 
 import torch.nn as nn
-
+from torch.nn.parameter import Parameter
 from modules.transformation import TPS_SpatialTransformerNetwork
 from modules.feature_extraction import VGG_FeatureExtractor, RCNN_FeatureExtractor, ResNet_FeatureExtractor
 from modules.sequence_modeling import BidirectionalLSTM
 from modules.prediction import Attention
+from torch.nn import functional as F 
 
+class GeM(nn.Module):
+    def __init__(self, p=3, eps=1e-6):
+        super(GeM,self).__init__()
+        self.p = Parameter(torch.ones(1)*p)
+        self.eps = eps
+
+    def forward(self, x):
+        return F.adaptive_avg_pool2d(x.clamp(min=self.eps).pow(self.p), (None, 1)).pow(1./self.p)     
+    def __repr__(self):
+        return self.__class__.__name__ + '(' + 'p=' + '{:.4f}'.format(self.p.data.tolist()[0]) + ', ' + 'eps=' + str(self.eps) + ')'
 
 class Model(nn.Module):
 
@@ -48,7 +59,8 @@ class Model(nn.Module):
             raise Exception('No FeatureExtraction module specified')
         self.FeatureExtraction_output = opt.output_channel  # int(imgH/16-1) * 512
         self.AdaptiveAvgPool = nn.AdaptiveAvgPool2d((None, 1))  # Transform final (imgH/16-1) -> 1
-
+        # self.AdaptiveAvgPool = GeM()
+        
         """ Sequence modeling"""
         if opt.SequenceModeling == 'BiLSTM':
             self.SequenceModeling = nn.Sequential(
@@ -71,15 +83,19 @@ class Model(nn.Module):
         """ Transformation stage """
         if not self.stages['Trans'] == "None":
             input = self.Transformation(input)
+        # print("Input: ", input.shape)
 
         """ Feature extraction stage """
         visual_feature = self.FeatureExtraction(input)
-        visual_feature = self.AdaptiveAvgPool(visual_feature.permute(0, 3, 1, 2))  # [b, c, h, w] -> [b, w, c, h]
+        # print("visual_feature FeatureExtraction: ", visual_feature.shape)
+        visual_feature = self.AdaptiveAvgPool(visual_feature.permute(0, 3, 1, 2))  # [b, c, h, w] -> [b, w, c, h]  
         visual_feature = visual_feature.squeeze(3)
+        # print("visual_feature squeeze: ", visual_feature.shape)
 
         """ Sequence modeling stage """
         if self.stages['Seq'] == 'BiLSTM':
             contextual_feature = self.SequenceModeling(visual_feature)
+            # print("contextual_feature: ", contextual_feature.shape)
         else:
             contextual_feature = visual_feature  # for convenience. this is NOT contextually modeled by BiLSTM
 
@@ -88,5 +104,6 @@ class Model(nn.Module):
             prediction = self.Prediction(contextual_feature.contiguous())
         else:
             prediction = self.Prediction(contextual_feature.contiguous(), text, is_train, batch_max_length=self.opt.batch_max_length)
+        # print("prediction: ", prediction.shape)
 
         return prediction
