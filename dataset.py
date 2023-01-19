@@ -289,7 +289,7 @@ class OCRDataset(Dataset):
                 except:
                     print(label)
                 
-                # Since the original regex doesn't work this is an alternative approach
+                # Since the original regex doesn't work this is an alternative approach (Especially for Arabic)
                 skip_example = True
                 for c in label:
                      if c not in self.opt.character:

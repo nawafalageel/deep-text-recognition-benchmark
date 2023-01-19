@@ -5,7 +5,6 @@ import random
 import string
 import argparse
 import json 
-from  base_row_logging import *
 
 import torch
 import torch.backends.cudnn as cudnn

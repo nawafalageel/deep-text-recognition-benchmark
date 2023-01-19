@@ -39,12 +39,13 @@ evaluation datasets : benchmark evaluation datasets, consist of [IIIT](http://cv
 ### Run demo with pretrained model
 1. Download pretrained model from [here](https://drive.google.com/drive/folders/15WPsuPJDCzhp2SvYZLRj8mAlT3zmoAMW)
 2. Add image files to test into `demo_image/`
-3. Run demo.py (add `--sensitive` option if you use case-sensitive model)
+3. Run demo.py (add `--sensitive` option if you use case-sensitive model, and `--allowlist` option if you want to use custom character set)
 ```
 CUDA_VISIBLE_DEVICES=0 python3 demo.py \
 --Transformation TPS --FeatureExtraction ResNet --SequenceModeling BiLSTM --Prediction Attn \
 --image_folder demo_image/ \
---saved_model TPS-ResNet-BiLSTM-Attn.pth
+--saved_model TPS-ResNet-BiLSTM-Attn.pth \
+--allowlist 'تمئيخطؤفبضعصلإثءشغأجهوزرىذآةسناكظحدق'
 ```
 
 #### prediction results
@@ -99,6 +100,7 @@ CUDA_VISIBLE_DEVICES=0 python3 test.py \
 * `--eval_data`: folder path to evaluation (with test.py) lmdb dataset.
 * `--select_data`: select training data. default is MJ-ST, which means MJ and ST used as training data.
 * `--batch_ratio`: assign ratio for each selected data in the batch. default is 0.5-0.5, which means 50% of the batch is filled with MJ and the other 50% of the batch is filled ST.
+* `--epochs`: number of epochs to train. No need to specify iteration number, since the code will automatically calculate the number of iterations based on the number of training data and batch size.
 * `--data_filtering_off`: skip [data filtering](https://github.com/clovaai/deep-text-recognition-benchmark/blob/f2c54ae2a4cc787a0f5859e9fdd0e399812c76a3/dataset.py#L126-L146) when creating LmdbDataset. 
 * `--Transformation`: select Transformation module [None | TPS].
 * `--FeatureExtraction`: select FeatureExtraction module [VGG | RCNN | ResNet].
@@ -112,12 +114,14 @@ image_release.zip contains failure case images and benchmark evaluation images w
 <img src="./figures/failure-case.jpg" width="1000" title="failure cases">
 
 ## When you need to train on your own dataset or Non-Latin language datasets.
-1. Create your own lmdb dataset.
+~~1. Create your own lmdb dataset.~~ (**Deprecated**)
+
 ```
 pip3 install fire
 python3 create_lmdb_dataset.py --inputPath data/ --gtFile data/gt.txt --outputPath result/
 ```
-The structure of data folder as below.
+
+1. All you need is to prepare your own data folder. The structure of data folder as below:
 ```
 data
 ├── gt.txt
@@ -135,7 +139,20 @@ test/word_2.png kills
 test/word_3.png A
 ...
 ```
-2. Modify `--select_data`, `--batch_ratio`, and `opt.character`, see [this issue](https://github.com/clovaai/deep-text-recognition-benchmark/issues/85).
+2. Run the train as follows.
+```
+python3 train.py --exp_name TPS_ResNet_BiLSTM_CTC_exp1 \
+--train_data /workspace/OCR/Datasets/cleaned_data/ \
+--valid_data /workspace/OCR/Datasets/cleaned_val/ --batch_size 128 \
+--num_epoch 30 --valInterval 5000 \
+--select_data cleaned_data  \
+--character '!"#%&()*+,-./:;<=>?@[]^_{|}،؛؟ءآأؤإئابةتثجحخدذرزسشصضطظعغفقكلمنهوىي٠١٢٤٥٦٧۳۸۹‚'  \
+--imgH 64 --imgW 600 \
+--Transformation TPS --FeatureExtraction ResNet \
+--SequenceModeling BiLSTM --Prediction CTC
+```
+
+3. Modify `--select_data`, `--batch_ratio`, and `opt.character`, see [this issue](https://github.com/clovaai/deep-text-recognition-benchmark/issues/85).
 
 
 ## Acknowledgements

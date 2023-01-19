@@ -18,7 +18,7 @@ import torch.nn as nn
 from torch.nn.parameter import Parameter
 from modules.transformation import TPS_SpatialTransformerNetwork
 from modules.feature_extraction import VGG_FeatureExtractor, RCNN_FeatureExtractor, ResNet_FeatureExtractor
-from modules.sequence_modeling import BidirectionalLSTM
+from modules.sequence_modeling import BidirectionalLSTM, MyTransformer
 from modules.prediction import Attention
 from torch.nn import functional as F 
 
@@ -67,6 +67,9 @@ class Model(nn.Module):
                 BidirectionalLSTM(self.FeatureExtraction_output, opt.hidden_size, opt.hidden_size),
                 BidirectionalLSTM(opt.hidden_size, opt.hidden_size, opt.hidden_size))
             self.SequenceModeling_output = opt.hidden_size
+        elif opt.SequenceModeling == 'Transformer':
+            self.SequenceModeling = MyTransformer(self.FeatureExtraction_output, opt.hidden_size, opt.hidden_size)
+            self.SequenceModeling_output = opt.hidden_size
         else:
             print('No SequenceModeling module specified')
             self.SequenceModeling_output = self.FeatureExtraction_output
@@ -93,7 +96,7 @@ class Model(nn.Module):
         # print("visual_feature squeeze: ", visual_feature.shape)
 
         """ Sequence modeling stage """
-        if self.stages['Seq'] == 'BiLSTM':
+        if self.stages['Seq'] == 'BiLSTM' or self.stages['Seq'] == 'Transformer':
             contextual_feature = self.SequenceModeling(visual_feature)
             # print("contextual_feature: ", contextual_feature.shape)
         else:
